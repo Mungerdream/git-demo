@@ -1,0 +1,69 @@
+name: orfs-smoke2
+on:
+  push:
+    paths:
+      - 'orfs_smoke/**'
+  workflow_dispatch:
+
+jobs:
+  gcd:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: pull ORFS image
+        run: docker pull openroad/orfs:latest
+
+      - name: discovery (platform layout + versions)
+        run: |
+          docker run --rm openroad/orfs:latest bash -lc '
+            cd /OpenROAD-flow-scripts/flow
+            echo "== openroad =="; openroad -version 2>&1 | head -3
+            echo "== yosys ==";     yosys -V 2>&1 | head -2
+            echo "== git ==";       cd /OpenROAD-flow-scripts && git log -1 --format="%H %cd" 2>&1 | head -2; cd flow
+            echo "== platform lib =="; ls -la platforms/sky130hd/lib/
+            echo "== platform lef =="; ls -la platforms/sky130hd/lef/
+            echo "== platform config (lib/lef lines) =="
+            grep -nE "LIB_FILES|LEF_FILES|LIB_DIR|LEF_DIR|GDS_FILES|ADDITIONAL" platforms/sky130hd/config.mk | head -40
+            echo "== designs =="; ls designs/sky130hd | head -40
+            echo "== gcd config =="; cat designs/sky130hd/gcd/config.mk
+          ' 2>&1 | tee disc.log
+
+      - name: run sky130hd gcd (in place)
+        run: |
+          mkdir -p out
+          set -o pipefail
+          docker run --rm -v $PWD/out:/out openroad/orfs:latest bash -lc '
+            set -e
+            cd /OpenROAD-flow-scripts/flow
+            make DESIGN_CONFIG=./designs/sky130hd/gcd/config.mk > /out/make.log 2>&1 || { echo "MAKE FAILED"; tail -60 /out/make.log; exit 1; }
+            echo "== make tail =="; tail -25 /out/make.log
+            cp -a results reports logs /out/ 2>/dev/null || true
+          '
+
+      - name: odb ground-truth dump
+        if: always()
+        run: |
+          docker run --rm -v $PWD/out:/out -v $PWD/tools:/tools openroad/orfs:latest bash -lc '
+            cd /OpenROAD-flow-scripts/flow
+            DEF=$(find /out/results -name 6_final.def | head -1)
+            echo "DEF=$DEF"
+            [ -n "$DEF" ] || exit 0
+            openroad -python /tools/odb_dump.py /out/odb_truth.json "$DEF" platforms/sky130hd/lef/sky130_fd_sc_hd.lef 2>&1 | tail -20
+          ' || true
+
+      - name: inventory
+        if: always()
+        run: |
+          du -sh out/* 2>/dev/null
+          find out -name "*.def" -o -name "*.rpt" -o -name "*report*.json" -o -name "metrics.json" -o -name "*.sdc" | head -40
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gcd2
+          path: |
+            out/
+            disc.log
+          if-no-files-found: warn
