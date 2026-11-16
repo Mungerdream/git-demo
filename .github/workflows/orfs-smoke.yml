@@ -1,0 +1,42 @@
+name: orfs-smoke
+on:
+  push:
+    paths:
+      - 'orfs_smoke/**'
+  workflow_dispatch:
+
+jobs:
+  gcd:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: env info
+        run: |
+          echo "== host =="; nproc; free -g | head -2; df -h / | tail -1
+      - name: pull ORFS image
+        run: |
+          docker pull openroad/orfs:latest
+          docker image ls | head -5
+      - name: run sky130hd gcd through the flow
+        run: |
+          mkdir -p out
+          docker run --rm -v $PWD/out:/out openroad/orfs:latest bash -lc '
+            set -e
+            cd /OpenROAD-flow-scripts/flow
+            openroad -version || true
+            yosys -V || true
+            make DESIGN_CONFIG=./designs/sky130hd/gcd/config.mk \
+                 RESULTS_DIR=/out/results OBJECTS_DIR=/out/objects 2>&1 | tail -30
+          '
+      - name: inventory artifacts
+        if: always()
+        run: |
+          echo "== results tree =="; find out -maxdepth 5 -type f | head -60
+          echo "== sizes =="; du -sh out/* 2>/dev/null
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gcd-sky130hd
+          path: out/
+          if-no-files-found: warn
