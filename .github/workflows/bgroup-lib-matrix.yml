@@ -88,8 +88,8 @@ jobs:
       - name: inventory
         if: always()
         run: |
-          du -sh out/* 2>/dev/null
-          ls -la out/*.json out/runs.csv 2>/dev/null
+          du -sh out/* 2>/dev/null || true
+          ls -la out/*.json out/runs.csv 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         if: always()

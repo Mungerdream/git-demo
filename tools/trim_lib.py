@@ -44,13 +44,19 @@ MANDATORY_KEEP = ["fill", "tap", "diode", "decap", "conb", "probec", "gray"]
 
 
 def short_name(cell):
-    return cell[len(PREFIX):] if cell.startswith(PREFIX) else cell
+    """Cell name without the vendor/library prefix.
+
+    Handles both sky130_fd_sc_hd__xxx and the efabless extras
+    sky130_ef_sc_hd__xxx, whose family is still the trailing token.
+    """
+    if "__" in cell:
+        return cell.rsplit("__", 1)[1]
+    return cell
 
 
 def family_of(cell):
-    """Longest known family prefix of the short cell name (drive strength stripped)."""
-    s = short_name(cell)
-    return s.split("_")[0]
+    """Leading family token of the cell name (drive strength stripped)."""
+    return short_name(cell).split("_")[0]
 
 
 def keep_cell(cell, keep_fams, drop_fams):
@@ -199,10 +205,16 @@ def trim(lib_path, lef_path, outdir, keep_fams, drop_fams, tag=None):
         result["lef_out"] = out_lef
         result["lef_macros_kept"] = len(lef_kept)
         result["lef_macros_dropped"] = len(lef_dropped)
-        # check 1: .lib cell count == .lef MACRO count
-        result["check_count_ok"] = (len(lib_kept) == len(lef_kept))
-        sym = set(lib_kept) ^ set(lef_kept)
-        result["count_mismatch_sample"] = sorted(sym)[:10]
+        # check 1 (corrected): every cell we keep in the .lib MUST have geometry.
+        # The stock merged LEF is a superset of the liberty (it also carries
+        # sky130_ef_* extras and the fill/tap cells that the tt corner lib does
+        # not model), so equality is the wrong predicate -- inclusion is.
+        missing = sorted(set(lib_kept) - set(lef_kept))
+        result["check_count_ok"] = not missing
+        result["cells_without_lef"] = missing[:20]
+        result["lef_only_cells"] = sorted(set(lef_kept) - set(lib_kept))
+        result["lib_lef_counts"] = {"lib": len(lib_kept), "lef": len(lef_kept),
+                                    "lef_only": len(result["lef_only_cells"])}
     return result
 
 
