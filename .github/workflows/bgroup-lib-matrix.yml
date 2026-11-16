@@ -1,0 +1,99 @@
+name: bgroup-lib-matrix
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'bgroup/**'
+
+jobs:
+  flow:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        lib: [basic, full, full-lite]
+    env:
+      LIB: ${{ matrix.lib }}
+      DESIGN: adder128
+      SEED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: pull ORFS image
+        run: docker pull openroad/orfs:latest
+
+      - name: trim library and install in place (check 1 lib/lef cell count)
+        run: |
+          mkdir -p out
+          docker run --rm -e LIB -v $PWD:/work -v $PWD/out:/out openroad/orfs:latest bash -lc '
+            set -e
+            BINS=$(ls -d /OpenROAD-flow-scripts/tools/install/*/bin 2>/dev/null | tr "\n" ":")
+            export PATH="${BINS}${PATH}"
+            F=/OpenROAD-flow-scripts/flow
+            P=$F/platforms/sky130hd
+            mkdir -p /out/orig
+            cp $P/lef/sky130_fd_sc_hd.tlef $P/lef/sky130_fd_sc_hd_merged.lef /out/orig/
+            echo "== tool versions =="
+            openroad -version | head -2
+            yosys -V
+            python3 /work/tools/trim_lib.py --lib $P/lib/sky130_fd_sc_hd__tt_025C_1v80.lib \
+              --lef $P/lef/sky130_fd_sc_hd_merged.lef --preset "$LIB" \
+              --outdir /out/trimmed --json /out/trimmed/trim_report.json
+            cp /out/trimmed/sky130_fd_sc_hd__tt_025C_1v80.lib $P/lib/
+            cp /out/trimmed/sky130_fd_sc_hd_merged.lef $P/lef/
+            echo "== check 2: trimmed liberty parses =="
+            yosys -q -p "read_liberty $P/lib/sky130_fd_sc_hd__tt_025C_1v80.lib" && echo "liberty OK"
+          '
+
+      - name: run RTL-to-GDS (fixed CORE_UTILIZATION=0.50, PLACE_DENSITY=0.65)
+        run: |
+          docker run --rm -e LIB -e DESIGN -v $PWD:/work -v $PWD/out:/out openroad/orfs:latest bash -lc '
+            set -e
+            cd /OpenROAD-flow-scripts/flow
+            mkdir -p designs/sky130hd/$DESIGN
+            cp /work/designs/$DESIGN/config.mk /work/designs/$DESIGN/constraint.sdc designs/sky130hd/$DESIGN/
+            /usr/bin/time -v make DESIGN_CONFIG=./designs/sky130hd/$DESIGN/config.mk \
+                > /out/make.log 2>/out/make.time || { echo "MAKE_FAILED"; tail -60 /out/make.log; exit 1; }
+            tail -15 /out/make.log
+            cp -a results reports logs /out/
+          '
+
+      - name: measure (odb truth, grid pin density, orientation cross-check, runs row)
+        if: always()
+        run: |
+          docker run --rm -e LIB -e DESIGN -e SEED -v $PWD:/work -v $PWD/out:/out openroad/orfs:latest bash -lc '
+            BINS=$(ls -d /OpenROAD-flow-scripts/tools/install/*/bin 2>/dev/null | tr "\n" ":")
+            export PATH="${BINS}${PATH}"
+            F=/OpenROAD-flow-scripts/flow
+            P=$F/platforms/sky130hd
+            DEF=$(find /out/results -name 6_final.def | head -1)
+            echo "DEF=$DEF"
+            [ -n "$DEF" ] || { echo "no DEF produced, nothing to measure"; exit 0; }
+            echo "== odb ground truth =="
+            openroad -python /work/tools/odb_dump.py /out/odb_truth.json "$DEF" \
+                 $P/lef/sky130_fd_sc_hd.tlef $P/lef/sky130_fd_sc_hd_merged.lef 2>&1 | tail -5
+            echo "== grid pin density =="
+            python3 /work/tools/pin_density.py --def "$DEF" \
+                 --lef $P/lef/sky130_fd_sc_hd.tlef --lef $P/lef/sky130_fd_sc_hd_merged.lef \
+                 --grids 2.5,5,10 --out /out/density.json
+            echo "== orientation cross-check vs odb =="
+            python3 /work/tools/check_orient.py --truth /out/odb_truth.json --def "$DEF" \
+                 --lef $P/lef/sky130_fd_sc_hd_merged.lef --out /out/orient_check.json || true
+            echo "== runs.csv row =="
+            python3 /work/tools/collect.py --rundir /out --design $DESIGN --lib $LIB --seed $SEED \
+                 --density /out/density.json --csv /out/runs.csv --notes "grid=5um util=0.50 den=0.65 sdc=vclk100ns"
+          '
+
+      - name: inventory
+        if: always()
+        run: |
+          du -sh out/* 2>/dev/null
+          ls -la out/*.json out/runs.csv 2>/dev/null
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: run-${{ matrix.lib }}-${{ env.DESIGN }}
+          path: out/
+          if-no-files-found: warn
