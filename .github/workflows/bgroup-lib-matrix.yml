@@ -4,6 +4,9 @@ on:
   push:
     paths:
       - 'bgroup/**'
+      - 'tools/**'
+      - 'designs/**'
+      - 'rtl/**'
 
 jobs:
   flow:

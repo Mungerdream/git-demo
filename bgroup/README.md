@@ -34,3 +34,4 @@ out/
 1. 单元数：`.lib` cell 数 == `.lef` MACRO 数（`trim_report.json.check_count_ok`）
 2. 可读：`yosys read_liberty` 通过；LEF 由 flow 的 `read_lef` 隐式验证
 3. 对得上：DEF `COMPONENTS` 去掉 fill/tap 后 == 网表单元数；ROWS 重算核心区面积 == report（±0.5%）
+- 2026-11-16T08:10:39Z rerun after lib<=lef fix
